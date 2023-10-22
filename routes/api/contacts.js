@@ -1,8 +1,16 @@
 const Joi = require('joi');
 const express = require('express');
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const authenticate = require('../../middleware/authenticate');
+const Contact = require('../../models/contacts');
+const User = require('../../models/users');
 
 const router = express.Router()
+
+const secretKey = crypto.randomBytes(32).toString('hex');
 
 mongoose.connect('mongodb+srv://dbUser:User2023@cluster0.kymatmd.mongodb.net/')
   .then(() => {
@@ -13,28 +21,84 @@ mongoose.connect('mongodb+srv://dbUser:User2023@cluster0.kymatmd.mongodb.net/')
     process.exit(1);
   });
 
-const contactSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: [true, 'Set name for contact'],
-  },
-  email: {
-    type: String,
-    required: [true, 'Set email for contact']
-  },
-  phone: {
-    type: String,
-    required: [true, 'Set phone for contact'],
-  },
-  favorite: {
-    type: Boolean,
-    default: false,
-  },
+
+router.post('/register', async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ message: 'Email in use' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = new User({ email, password: hashedPassword });
+
+    await user.save();
+
+    const token = jwt.sign({ userId: user._id }, secretKey, { expiresIn: '1h' });
+
+    user.token = token;
+    await user.save();
+
+    res.status(201).json({ user: { email: user.email, subscription: user.subscription }, token });
+  } catch (error) {
+    next(error);
+  }
 });
 
-const Contact = mongoose.model('Contact', contactSchema);
+router.post('/login', async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
 
-router.get('/', async (req, res, next) => {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ message: 'Email or password is wrong' });
+    }
+
+    const passwordMatch = await bcrypt.compare(password, user.password);
+    if (!passwordMatch) {
+      return res.status(401).json({ message: 'Email or password is wrong' });
+    }
+
+    const token = jwt.sign({ userId: user._id }, secretKey, { expiresIn: '1h' });
+
+    user.token = token;
+    await user.save();
+
+    res.status(200).json({ token, user: { email: user.email, subscription: user.subscription } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/logout', authenticate, async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(401).json({ message: 'Not authorized' });
+    }
+
+    user.token = '';
+    await user.save();
+
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/current', authenticate, async (req, res) => {
+  res.status(200).json({ email: req.user.email, subscription: req.user.subscription });
+});
+
+
+
+router.get('/', authenticate, async (req, res, next) => {
   try {
     const contactsList = await Contact.find();
     res.status(200).json(contactsList);
@@ -43,7 +107,7 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-router.get('/:contactId', async (req, res, next) => {
+router.get('/:contactId', authenticate, async (req, res, next) => {
   try {
     const contact = await Contact.findById(req.params.contactId);
     if (!contact) {
@@ -55,7 +119,7 @@ router.get('/:contactId', async (req, res, next) => {
   }
 });
 
-router.post('/', async (req, res, next) => {
+router.post('/', authenticate, async (req, res, next) => {
   try {
     const { error } = contactSchema.validate(req.body);
 
@@ -71,7 +135,7 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-router.delete('/:contactId', async (req, res, next) => {
+router.delete('/:contactId', authenticate, async (req, res, next) => {
   try {
     const deletedContact = await Contact.findByIdAndDelete(req.params.contactId);
     if (!deletedContact) {
@@ -83,7 +147,7 @@ router.delete('/:contactId', async (req, res, next) => {
   }
 });
 
-router.put('/:contactId', async (req, res, next) => {
+router.put('/:contactId', authenticate, async (req, res, next) => {
   try {
     const { error } = contactSchema.validate(req.body);
 
@@ -107,7 +171,7 @@ router.put('/:contactId', async (req, res, next) => {
   }
 });
 
-router.patch('/:contactId/favorite', async (req, res, next) => {
+router.patch('/:contactId/favorite', authenticate, async (req, res, next) => {
   try {
     const { error } = favoriteSchema.validate(req.body);
 
