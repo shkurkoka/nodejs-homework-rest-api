@@ -1,9 +1,13 @@
 const Joi = require('joi');
 const express = require('express');
-const mongoose = require('mongoose');
+const multer = require('multer');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const path = require('path');
+const mongoose = require('mongoose');
 const crypto = require('crypto');
+const jimp = require('jimp');
+
 const authenticate = require('../../middleware/authenticate');
 const Contact = require('../../models/contacts');
 const User = require('../../models/users');
@@ -20,29 +24,38 @@ mongoose.connect('mongodb+srv://dbUser:User2023@cluster0.kymatmd.mongodb.net/')
     console.error('Database connection error:', error.message);
     process.exit(1);
   });
+  
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'tmp');
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + path.extname(file.originalname));
+  },
+});
 
+const upload = multer({ storage: storage });
 
 router.post('/register', async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
+    const avatarURL = gravatar.url(email, { s: '250', d: 'retro' });
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(409).json({ message: 'Email in use' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-
     const user = new User({ email, password: hashedPassword });
 
     await user.save();
 
     const token = jwt.sign({ userId: user._id }, secretKey, { expiresIn: '1h' });
-
     user.token = token;
     await user.save();
 
-    res.status(201).json({ user: { email: user.email, subscription: user.subscription }, token });
+    res.status(201).json({ user: { email: user.email, subscription: user.subscription }, avatarURL, token });
   } catch (error) {
     next(error);
   }
@@ -63,7 +76,6 @@ router.post('/login', async (req, res, next) => {
     }
 
     const token = jwt.sign({ userId: user._id }, secretKey, { expiresIn: '1h' });
-
     user.token = token;
     await user.save();
 
@@ -76,7 +88,6 @@ router.post('/login', async (req, res, next) => {
 router.post('/logout', authenticate, async (req, res, next) => {
   try {
     const userId = req.user._id;
-
     const user = await User.findById(userId);
 
     if (!user) {
@@ -94,6 +105,27 @@ router.post('/logout', authenticate, async (req, res, next) => {
 
 router.get('/current', authenticate, async (req, res) => {
   res.status(200).json({ email: req.user.email, subscription: req.user.subscription });
+});
+
+router.patch('/avatars', authenticate, upload.single('avatar'), async (req, res, next) => {
+  try {
+    const user = req.user;
+
+    const imagePath = path.join(__dirname, 'tmp', req.file.filename);
+    const image = await jimp.read(imagePath);
+    await image.cover(250, 250).write(imagePath);
+
+    const avatarURL = `/avatars/${req.file.filename}`;
+    const publicPath = path.join(__dirname, 'public', 'avatars', req.file.filename);
+    await fs.promises.rename(imagePath, publicPath);
+
+    user.avatarURL = avatarURL;
+    await user.save();
+
+    res.status(200).json({ avatarURL });
+  } catch (error) {
+    next(error);
+  }
 });
 
 
@@ -138,9 +170,11 @@ router.post('/', authenticate, async (req, res, next) => {
 router.delete('/:contactId', authenticate, async (req, res, next) => {
   try {
     const deletedContact = await Contact.findByIdAndDelete(req.params.contactId);
+
     if (!deletedContact) {
       return res.status(404).json({ message: 'Contact not found' });
     }
+
     res.status(200).json({ message: 'Contact deleted' });
   } catch (error) {
     next(error);
