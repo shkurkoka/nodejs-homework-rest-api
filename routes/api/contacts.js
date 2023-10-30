@@ -4,6 +4,8 @@ const multer = require('multer');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const nodemailer = require('nodemailer');
+const smtpTransport = require('nodemailer-smtp-transport');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const jimp = require('jimp');
@@ -12,9 +14,38 @@ const authenticate = require('../../middleware/authenticate');
 const Contact = require('../../models/contacts');
 const User = require('../../models/users');
 
+require('dotenv').config();
+
 const router = express.Router()
 
 const secretKey = crypto.randomBytes(32).toString('hex');
+
+const config = {
+  host: 'smtp.meta.ua',
+  port: 465,
+  secure: true,
+  auth: {
+    user: 'tester202317@meta.ua',
+    pass: "Meta2023",
+  },
+};
+
+const transporter = nodemailer.createTransport(config);
+
+const mailOptions = {
+  from: 'tester202317@meta.ua',
+  to: user.email,
+  subject: 'Email Verification',
+  text: `Click on the link to verify your email: ${verificationURL}`,
+};
+
+transporter.sendMail(mailOptions, (error, info) => {
+  if (error) {
+    console.log('Error sending email:', error);
+  } else {
+    console.log('Email sent:', info.response);
+  }
+});
 
 mongoose.connect('mongodb+srv://dbUser:User2023@cluster0.kymatmd.mongodb.net/')
   .then(() => {
@@ -36,6 +67,69 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
+router.get('/verify/:verificationToken', async (req, res, next) => {
+  try {
+    const { verificationToken } = req.params;
+
+    const user = await User.findOne({ verificationToken });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    if (user.verify) {
+      return res.status(400).json({ message: 'Email is already verified' });
+    }
+
+    user.verify = true;
+    user.verificationToken = null;
+    await user.save();
+
+    return res.status(200).json({ message: 'Email verification successful' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/verify', async (req, res, next) => {
+  try {
+    const { email } = req.body;
+ий
+    const user = await User.findOne({ email, verify: false });
+
+    if (!user) {
+      return res.status(400).json({ message: 'Verification has already been passed' });
+    }
+
+    const newVerificationToken = uuid.v4();
+    user.verificationToken = newVerificationToken;
+    await user.save();
+
+    const verificationURL = `http://localhost:3000/users/verify/${newVerificationToken}`;
+
+    const mailOptions = {
+      from: 'tester202317@meta.ua',
+      to: user.email,
+      subject: 'Email Verification',
+      text: `Click on the link to verify your email: ${verificationURL}`,
+    };
+
+    transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+        console.log('Error sending email:', error);
+      } else {
+        console.log('Email sent:', info.response);
+      }
+    });
+
+    return res.status(200).json({ message: 'Verification email sent' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+
 router.post('/register', async (req, res, next) => {
   try {
     const { email, password } = req.body;
@@ -46,16 +140,38 @@ router.post('/register', async (req, res, next) => {
       return res.status(409).json({ message: 'Email in use' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = new User({ email, password: hashedPassword });
-
-    await user.save();
+    const user = new User({
+      email,
+      password,
+      verificationToken,
+    });
 
     const token = jwt.sign({ userId: user._id }, secretKey, { expiresIn: '1h' });
     user.token = token;
     await user.save();
 
-    res.status(201).json({ user: { email: user.email, subscription: user.subscription }, avatarURL, token });
+    const newVerificationToken = uuid.v4();
+    user.verificationToken = newVerificationToken;
+    await user.save();
+
+    const verificationURL = `http://localhost:3000/users/verify/${newVerificationToken}`;
+
+    const mailOptions = {
+      from: 'tester202317@meta.ua',
+      to: user.email,
+      subject: 'Email Verification',
+      text: `Click on the link to verify your email: ${verificationURL}`,
+    };
+
+    transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+        console.log('Error sending email:', error);
+      } else {
+        console.log('Email sent:', info.response);
+      }
+    });
+
+    res.status(201).json({ user: { email: user.email, subscription: user.subscription, verificationToken: user.verificationToken }, avatarURL, token, message: 'User registered. Verification email sent.'  });
   } catch (error) {
     next(error);
   }
